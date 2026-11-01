@@ -131,6 +131,21 @@ lot. It's there to show the starting point.
 - **It isn't scientific colour.** Like SHO, it's a way of showing the differences between filters.
 - **Speed.** About 1 minute for a 33 megapixel image on a Raspberry Pi 5.
 
+## Hubble data
+
+`tools/hst2zwo.py` turns Hubble WFC3/UVIS exposures (`*_flc.fits` from
+[MAST](https://mast.stsci.edu)) into 16 bit FITS frames, in folders laid out as ZWO's ASICap names
+them. It repairs bad pixels, cosmic rays, specks and dark charge trap lines, one exposure at a time.
+
+```
+pip install numpy scipy astropy astroscrappy
+python3 tools/hst2zwo.py <flc folder> <output folder> [mosaic]
+```
+
+Add `mosaic` to place all exposures on one sky grid. The frames still need stacking, and with
+`mosaic` they're already aligned, so the stacker shouldn't align them again. Its thresholds have
+been tuned on M16 only.
+
 ## Credits
 
 M16 data: NASA, ESA and STScI, Hubble Space Telescope programme 13926. NGC 6888 and Rosette images:
