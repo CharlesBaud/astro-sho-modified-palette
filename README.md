@@ -63,6 +63,17 @@ You shouldn't need these to begin with.
 - **Exact zeros count as no data**, which handles the empty borders that alignment leaves. They come
   out black.
 
+## PixInsight
+
+**Not yet tested inside PixInsight:** reports are welcome. The colour maths has been checked against
+the Python tool outside PixInsight.
+
+1. Open your three linear mono images.
+2. Choose **Script > Execute Script File...** and pick `pixinsight/AstroSHOModifiedPalette.js`.
+3. Check that the right image is selected for Ha, OIII and SII, then click **Run**.
+
+The result opens in a new window, already stretched, so leave STF off for it.
+
 ## How it works
 
 The usual SHO mapping puts Ha in green. Ha is usually the strongest filter, so the image turns green,
