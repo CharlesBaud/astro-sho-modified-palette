@@ -5,7 +5,7 @@ without star removal, green removal or hand tuning.
 
 ![M16: plain SHO on the left, this palette on the right](docs/m16-compare.jpg)
 
-*M16, Hubble data. Left: plain SHO. Right: this palette.*
+*M16, Hubble data. Left: plain SHO. Right: this palette, with balance 12 and the brightness set by hand.*
 
 ## Use it
 
