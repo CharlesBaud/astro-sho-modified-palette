@@ -5,7 +5,7 @@ without star removal, green removal or hand tuning.
 
 ![M16: plain SHO on the left, this palette on the right](docs/m16-compare.jpg)
 
-*M16, Hubble data. Left: plain SHO. Right: this palette, with balance 12 and the brightness set by hand.*
+*M16, Hubble data, the whole mosaic from 48 exposures with its real edges. The streak at top left is an optical ghost in the camera. Left: plain SHO. Right: this palette, with balance 12, blacks lifted 15% and the brightness set by hand.*
 
 ## Use it
 
@@ -50,6 +50,7 @@ You shouldn't need these to begin with.
 |---|---|---|
 | `-o name.tif` | `sho-palette.tif` beside the Ha image | Output file |
 | `--balance` | 8 | Colour balance: higher is more gold, negative is more cyan |
+| `--lift` | 0 | Lifts dark areas by this percent of the median brightness, for example 15 |
 | `--threshold` | 60 | Higher means less colour in faint, noisy areas |
 | `--brightness` | 1 | Multiplies the automatic brightness, for example 1.5 or 0.7 |
 
@@ -89,7 +90,8 @@ separate, much as a TV signal keeps Y apart from U and V.
    `h = tanh(1.5 ln((O + k) / (S + k)))`
 
    A ratio of 1 gives no colour, so stars stay white.
-3. **Noise.** `k` comes from the local noise. Added to both sides of a ratio, it pulls the ratio to 1
+3. **Noise.** `k` comes from the local noise, smoothed over a wide area so that a change in the
+   number of frames doesn't show as a step in the colour. Added to both sides of a ratio, it pulls the ratio to 1
    wherever the signal is below the noise, so empty sky stays neutral.
 4. **The twist.** The ratio of Ha to the other two turns that axis:
 
@@ -129,13 +131,16 @@ lot. It's there to show the starting point.
   its stars can keep some colour.
 - **Very few stars.** With fewer than 8 usable stars there is no star balance, and the tool says so.
 - **It isn't scientific colour.** Like SHO, it's a way of showing the differences between filters.
-- **Speed.** About 1 minute for a 33 megapixel image on a Raspberry Pi 5.
+- **Speed.** About 1 minute for a 33 megapixel image on a Raspberry Pi 5. A 62 megapixel image needs
+  about 4.7 GB of memory.
 
 ## Hubble data
 
 `tools/hst2zwo.py` turns Hubble WFC3/UVIS exposures (`*_flc.fits` from
 [MAST](https://mast.stsci.edu)) into 16 bit FITS frames, in folders laid out as ZWO's ASICap names
 them. It repairs bad pixels, cosmic rays, specks and dark charge trap lines, one exposure at a time.
+With `mosaic` it also matches the exposures' levels, and on sets of up to 18 frames it compares the
+filters to catch cosmic rays where only one frame covers the sky.
 
 ```
 pip install numpy scipy astropy astroscrappy

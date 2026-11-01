@@ -45,6 +45,8 @@ HUE_CYAN = (190.0, 235.0)  # Cyan end of the axis, at low Ha and at high Ha
 COLOUR_R = 3       # Colour comes from 7x7 means: it needs less detail than brightness
 STAR_R = 15        # Surroundings a star is measured against
 NOISE_BLOCK = 64   # Pixels each side of a local noise measurement
+NOISE_SMOOTH = 8   # Blocks each way the noise map is smoothed over
+LIFT_STEP = 3      # Every this many pixels each way for the median brightness of the lift
 EQ_BINS = 256      # Histogram of the Ha ratio, used for the twist
 EQ_LO, EQ_HI = -1.0, 3.0
 BAL_LIMIT = .25    # The star balance stays within this and its inverse
@@ -120,6 +122,24 @@ def NoiseGrid(v, nw, nh):
     return g
 
 
+def SmoothNoise(g):
+    """Smooth the noise map over a wide area, twice: where few frames cover the sky the noise
+    is higher, and a sharp change there would show as a step in the colour along the frame's
+    edge. Empty blocks read 0 and do not count."""
+    r = NOISE_SMOOTH
+    h, w = g.shape
+    for _ in range(2):
+        tables = []
+        for a in (np.where(g > 0, g, 0).astype(np.float64), (g > 0).astype(np.float64)):
+            c = np.zeros((h + 1, w + 1))
+            c[1:, 1:] = a.cumsum(0).cumsum(1)
+            y0, y1 = np.clip(np.arange(h) - r, 0, h)[:, None], np.clip(np.arange(h) + r + 1, 0, h)[:, None]
+            x0, x1 = np.clip(np.arange(w) - r, 0, w), np.clip(np.arange(w) + r + 1, 0, w)
+            tables.append(c[y1, x1] - c[y0, x1] - c[y1, x0] + c[y0, x0])
+        g = np.where(tables[1] > 0, tables[0] / np.maximum(tables[1], 1), 0).astype(np.float32)
+    return g
+
+
 def BoxMean(a, r):
     """Mean over a square of radius r, repeating the edge pixels."""
     for axis in (1, 0):
@@ -171,8 +191,9 @@ def InRange(r, g, b):
     return (np.minimum(np.minimum(r, g), b) >= -1e-3) & (np.maximum(np.maximum(r, g), b) <= 1.001)
 
 
-def Prepare(f, balance):
-    """Takes off the sky and balances the filters in place; returns the invalid pixel mask."""
+def Prepare(f, balance, lift=0):
+    """Takes off the sky, balances the filters and lifts the blacks by lift percent of the median
+    brightness, in place; returns the invalid pixel mask."""
     bad = ~np.isfinite(f[0]) | ~np.isfinite(f[1]) | ~np.isfinite(f[2])
     for l in f:
         l[~np.isfinite(l)] = 0
@@ -193,6 +214,11 @@ def Prepare(f, balance):
         f[1] += -balance/100*(f[0] - f[1])
     if balance > 0:
         f[2] += balance/100*(f[0] - f[2])
+    if lift > 0:
+        y = (f[0] + f[1] + f[2])[::LIFT_STEP, ::LIFT_STEP]/3
+        up = lift/100*np.median(y[~bad[::LIFT_STEP, ::LIFT_STEP]])
+        for l in f:
+            l += up
     return bad
 
 
@@ -201,7 +227,7 @@ def Colour(f, bad, threshold, gain, gamma):
     hh, ww = f[0].shape
     nw, nh = (ww - 1)//NOISE_BLOCK, hh//NOISE_BLOCK
     knorm = threshold/(2*COLOUR_R + 1)
-    grid = [NoiseGrid(l, nw, nh) for l in f]
+    grid = [SmoothNoise(NoiseGrid(l, nw, nh)) for l in f]
     gos2 = knorm*np.sqrt(grid[1]**2 + grid[2]**2)
     gall = knorm*np.sqrt(grid[0]**2 + grid[1]**2 + grid[2]**2)
     m = [BoxMean(l, COLOUR_R) for l in f]
@@ -338,6 +364,8 @@ def main():
     ap.add_argument('-o', '--output', help='output TIFF (default: sho-palette.tif beside the Ha image)')
     ap.add_argument('--balance', type=float, default=8,
                     help='colour balance, + towards gold, - towards cyan (default 8)')
+    ap.add_argument('--lift', type=float, default=0,
+                    help='lift the blacks, percent of the median brightness (default 0)')
     ap.add_argument('--threshold', type=float, default=60,
                     help='higher means less colour in the faint noisy areas (default 60)')
     ap.add_argument('--brightness', type=float, default=1,
@@ -369,7 +397,7 @@ def main():
     for l in f:
         l /= top
 
-    bad = Prepare(f, args.balance)
+    bad = Prepare(f, args.balance, args.lift)
     gain = AutoGain(f, bad, args.brightness)
     print('Making the colours')
     rgb = Colour(f, bad, args.threshold, gain, GAMMA)

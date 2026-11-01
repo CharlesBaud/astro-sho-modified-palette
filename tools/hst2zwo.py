@@ -58,6 +58,16 @@ DARK_AROUND = 21 # columns of the median across, the level beside the line
 DARK_K = 5.0    # How far below that level, in noise sigma of the column median
 DARK_LEN = 60   # Shortest line, rows, and at most this wide: DARK_WIDE columns and 1/8 of its length
 DARK_WIDE = 6
+LEVEL_STEP = 4     # Frame levels (MatchLevels): measured on every this many pixels
+LEVEL_MIN_OVERLAP = 20000  # Fewest of those shared for a pair of frames to count
+SPIKE_MAX_FRAMES = 18  # One frame spikes (OneFrameSpikes): holds all frames in memory, so only small sets
+SPIKE_TILE = 512   # Tile size
+SPIKE_AROUND = 11  # Surroundings, the median of this square
+SPIKE_NEAR = 5     # Look in the other filters within this square
+SPIKE_K = 5.0      # A spike stands this many noise sigma above its surroundings
+SPIKE_EDGE = 2.5   # Its skirt, in noise sigma
+SPIKE_QUIET = 4.0  # Other filter shows nothing: under this many of its noise sigma,
+SPIKE_R = 0.03     # or under this fraction of the spike
 MIN_GOOD = 8    # Good neighbours wanted to repair a flagged pixel
 MAX_R = 32      # Furthest search; beyond, no data (in practice only the chip gap)
 NEIGHBOURS = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=bool)
@@ -219,6 +229,95 @@ def PlaceChip(out, e, w, g):
     r[inside] = v
 
 
+def MatchLevels(paths):
+    """Mosaic only: exposures sit at slightly different levels (Ha sky changes with the orbit),
+    so where the mix of frames changes, at a chip gap or a frame's edge, the average steps.
+    One offset per frame is found from the median difference of every overlapping pair and
+    taken off, so each filter's overall level is unchanged. paths is {slot: [files]}."""
+    for s in paths:
+        small = []
+        for p in paths[s]:
+            f = fits.getdata(p)[::LEVEL_STEP, ::LEVEL_STEP].astype(np.float32)
+            small.append(np.where(f > 0, f, np.nan))
+        n = len(small)
+        rows, diffs = [np.ones(n)/n], [0.0]  # The offsets sum to 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                both = np.isfinite(small[i]) & np.isfinite(small[j])
+                if np.count_nonzero(both) >= LEVEL_MIN_OVERLAP:
+                    r = np.zeros(n)
+                    r[i], r[j] = 1, -1
+                    rows.append(r)
+                    diffs.append(np.median(small[i][both] - small[j][both]))
+        off = np.linalg.lstsq(np.array(rows), np.array(diffs), rcond=None)[0]
+        print('slot %d: frame levels matched, range %.1f ADU' % (s, off.max() - off.min()))
+        for p, o in zip(paths[s], off):
+            with fits.open(p) as h:
+                f = h[0].data
+                fixed = np.where(f > 0, np.clip(np.round(f.astype(np.float32) - o), 1, 65535), 0).astype(np.uint16)
+                fits.PrimaryHDU(fixed, header=h[0].header).writeto(p, overwrite=True)
+
+
+def Rises(v, valid):
+    """How far each pixel stands above its surroundings, and the noise of that."""
+    around = median_filter(v, size=SPIKE_AROUND)
+    rise = v - around
+    r = rise[valid]
+    return rise, 1.4826*np.median(np.abs(r - np.median(r))) if r.size >= 64 else 0.0
+
+
+def OneFrameSpikes(data):
+    """Mosaic only: where one exposure alone covers a filter, the stack cannot reject a cosmic
+    ray, and a round one looks like one of Hubble's sharp stars. A star shows in the other
+    filters and a cosmic ray does not, so a rise in one filter with no rise in the others is
+    marked. data is {slot: [frames]} on one grid, 0 for no data. Returns {slot: mask} of the
+    pixels to repair, in each filter's only frame there."""
+    slots = list(data)
+    cover = {s: sum((f > 0).astype(np.uint8) for f in data[s]) for s in slots}
+    level = {s: sum(f.astype(np.float32) for f in data[s]) / np.maximum(cover[s], 1) for s in slots}
+    masks = {s: np.zeros(cover[s].shape, dtype=bool) for s in slots}
+    hh, ww = cover[slots[0]].shape
+    for y in range(0, hh, SPIKE_TILE):  # In tiles: most of the image has more than one frame
+        for x in range(0, ww, SPIKE_TILE):
+            y0, y1 = max(y - SPIKE_AROUND, 0), min(y + SPIKE_TILE + SPIKE_AROUND, hh)
+            x0, x1 = max(x - SPIKE_AROUND, 0), min(x + SPIKE_TILE + SPIKE_AROUND, ww)
+            one = {s: cover[s][y0:y1, x0:x1] == 1 for s in slots}
+            if not any(o[y-y0:y-y0+SPIKE_TILE, x-x0:x-x0+SPIKE_TILE].any() for o in one.values()):
+                continue
+            rise, sig = {}, {}
+            for s in slots:
+                rise[s], sig[s] = Rises(level[s][y0:y1, x0:x1], one[s])
+            for s in slots:
+                if sig[s] <= 0:
+                    continue
+                alone = (rise[s] > SPIKE_K*sig[s]) & one[s]
+                for o in slots:
+                    if o != s:  # Nothing in the other filter: under its noise, or tiny next to this one
+                        seen = maximum_filter(rise[o], size=SPIKE_NEAR)
+                        alone &= (seen < SPIKE_QUIET*sig[o]) | (seen < SPIKE_R*rise[s])
+                if alone.any():  # With the blob's skirt, what alignment spread
+                    edge = (rise[s] > SPIKE_EDGE*sig[s]) & one[s]
+                    grown = binary_dilation(alone, structure=NEIGHBOURS | ~NEIGHBOURS, iterations=4, mask=edge)
+                    grown = binary_dilation(grown, structure=NEIGHBOURS | ~NEIGHBOURS) & one[s]
+                    masks[s][y0:y1, x0:x1] |= grown
+    return masks
+
+
+def RepairOneFrameSpikes(paths):
+    """Run OneFrameSpikes on the frames written, repair and rewrite them. paths is {slot: [files]}."""
+    data = {s: [fits.getdata(p) for p in paths[s]] for s in paths}
+    masks = OneFrameSpikes(data)
+    for s in paths:
+        print('slot %d: %.3f%% of pixels repaired as cosmic rays seen in one frame' % (s, 100*masks[s].mean()))
+        for p, f in zip(paths[s], data[s]):
+            m = masks[s] & (f > 0)
+            if m.any():
+                e = np.where(f > 0, f.astype(np.float64), np.nan)
+                fixed = np.nan_to_num(np.clip(np.round(RepairFlagged(e, m)), 1, 65535), nan=0.0).astype(np.uint16)
+                with fits.open(p) as h:
+                    fits.PrimaryHDU(fixed, header=h[0].header).writeto(p, overwrite=True)
+
+
 def main():
     frames = []
     for f in sorted(glob.glob(os.path.join(SRC, '*_flc.fits'))):
@@ -233,6 +332,7 @@ def main():
         grid, gw, gh = SkyGrid([f for _, _, f in frames])
         print('Sky grid %d x %d' % (gw, gh))
     runs = {}
+    written = {}
     for filt, when, f in frames:
         if filt not in SLOT:
             continue
@@ -283,6 +383,14 @@ def main():
         sat = (raw >= 65535).mean() * 100
         print('%-6s %s %5.0fs  sky %.0f ADU  saturated %.3f%%  cosmic rays %.2f%%  -> %s' % (filt, when.strftime('%H:%M:%S'),
               p['EXPTIME'], np.median(raw[raw > 0]), sat, 50 * (cr1 + cr2), os.path.join(os.path.basename(rdir), name)))
+        written.setdefault(slot, []).append(os.path.join(rdir, name))
+    if MOSAIC:
+        MatchLevels(written)
+    if MOSAIC and len(written) > 1:
+        if sum(len(v) for v in written.values()) <= SPIKE_MAX_FRAMES:
+            RepairOneFrameSpikes(written)
+        else:
+            print('Over %d frames: the stack rejects cosmic rays, one frame spikes not repaired' % SPIKE_MAX_FRAMES)
 
 
 if __name__ == '__main__':

@@ -30,6 +30,7 @@ var HUE_CYAN = [190.0, 235.0];  // Cyan end of the axis, at low Ha and at high H
 var COLOUR_R = 3;      // Colour comes from 7x7 means: it needs less detail than brightness
 var STAR_R = 15;       // Surroundings a star is measured against
 var NOISE_BLOCK = 64;  // Pixels each side of a local noise measurement
+var NOISE_SMOOTH = 8;  // Blocks each way the noise map is smoothed over
 var EQ_BINS = 256;     // Histogram of the Ha ratio, used for the twist
 var EQ_LO = -1.0, EQ_HI = 3.0;
 var BAL_LIMIT = .25;   // The star balance stays within this and its inverse
@@ -150,6 +151,27 @@ function NoiseGrid(v, ww, nw, nh) {
    return g;
 }
 
+// Smooth the noise map over a wide area, twice: where few frames cover the sky the noise is
+// higher, and a sharp change there would show as a step in the colour along the frame's
+// edge. Empty blocks read 0 and do not count.
+function SmoothNoise(g, nw, nh) {
+   var t = new Float32Array(nw*nh), pass, x, y, xx, yy, s, m, i;
+   for (pass = 0; pass < 2; pass++) {
+      for (y = 0; y < nh; y++)
+         for (x = 0; x < nw; x++) {
+            for (s = 0, m = 0, yy = y - NOISE_SMOOTH; yy <= y + NOISE_SMOOTH; yy++)
+               for (xx = x - NOISE_SMOOTH; xx <= x + NOISE_SMOOTH; xx++)
+                  if (yy >= 0 && yy < nh && xx >= 0 && xx < nw && g[yy*nw + xx] > 0) {
+                     s += g[yy*nw + xx];
+                     m++;
+                  }
+            t[y*nw + x] = m > 0 ? s/m : 0;
+         }
+      for (i = 0; i < nw*nh; i++) g[i] = t[i];
+   }
+   return g;
+}
+
 // Mean over a square of radius r, in place, repeating the edge pixels
 function BoxMean(v, t, cs, ww, hh, r) {
    var w, h, s, o, a, b, sc = 1/(2*r + 1), last = ww - 1;
@@ -220,7 +242,7 @@ function InRange() {
 }
 
 // Takes off the sky and balances the filters in place; returns the invalid pixel mask
-function Prepare(f, ww, hh, balance, log) {
+function Prepare(f, ww, hh, balance, lift, log) {
    var n = ww*hh, bad = new Uint8Array(n), i, l, v;
    for (l = 0; l < 3; l++)
       for (i = 0; i < n; i++) {
@@ -244,6 +266,18 @@ function Prepare(f, ww, hh, balance, log) {
       f[2][i] /= bs;
       f[1][i] += ko*(f[0][i] - f[1][i]);
       f[2][i] += ks*(f[0][i] - f[2][i]);
+   }
+   if (lift > 0) { // Lift the blacks by a share of the median brightness
+      var y = [], up;
+      for (i = 0; i < n; i += 9)
+         if (!bad[i]) y.push((f[0][i] + f[1][i] + f[2][i])/3);
+      y.sort(function (a, b) { return a - b; });
+      up = y.length > 0 ? lift/100*y[y.length >> 1] : 0;
+      for (i = 0; i < n; i++) {
+         f[0][i] += up;
+         f[1][i] += up;
+         f[2][i] += up;
+      }
    }
    return bad;
 }
@@ -270,7 +304,7 @@ function AutoGain(f, bad, ww, hh, brightness, log) {
 function Colour(f, bad, ww, hh, threshold, gain, log) {
    var n = ww*hh, nw = Math.floor((ww - 1)/NOISE_BLOCK), nh = Math.floor(hh/NOISE_BLOCK), knorm = threshold/(2*COLOUR_R + 1);
    var i, l, w, h;
-   var g0 = NoiseGrid(f[0], ww, nw, nh), g1 = NoiseGrid(f[1], ww, nw, nh), g2 = NoiseGrid(f[2], ww, nw, nh);
+   var g0 = SmoothNoise(NoiseGrid(f[0], ww, nw, nh), nw, nh), g1 = SmoothNoise(NoiseGrid(f[1], ww, nw, nh), nw, nh), g2 = SmoothNoise(NoiseGrid(f[2], ww, nw, nh), nw, nh);
    var gos2 = new Float32Array(nw*nh), gall = new Float32Array(nw*nh);
    for (i = 0; i < nw*nh; i++) {
       gos2[i] = knorm*Math.sqrt(g1[i]*g1[i] + g2[i]*g2[i]);
@@ -387,13 +421,13 @@ function Check(views) {
    return null;
 }
 
-function Run(views, balance, threshold, brightness) {
+function Run(views, balance, lift, threshold, brightness) {
    var ww = views[0].image.width, hh = views[0].image.height, f = [], l, rect = new Rect(0, 0, ww, hh);
    for (l = 0; l < 3; l++) {
       f[l] = new Float32Array(ww*hh);
       views[l].image.getSamples(f[l], rect, 0);
    }
-   var bad = Prepare(f, ww, hh, balance, Log);
+   var bad = Prepare(f, ww, hh, balance, lift, Log);
    var gain = AutoGain(f, bad, ww, hh, brightness, Log);
    if (!(gain > 0)) {
       ShowError("These images look empty: nothing stands above the sky.");
@@ -463,6 +497,7 @@ function main() {
    var oiii = ImageRow(dlg, "OIII:", ["oiii", "o3"]);
    var sii = ImageRow(dlg, "SII:", ["sii", "s2"]);
    var balance = NumberRow(dlg, "Colour balance:", -100, 100, 8, "Higher is more gold, negative is more cyan");
+   var lift = NumberRow(dlg, "Lift blacks %:", 0, 100, 0, "Lifts dark areas by this percent of the median brightness");
    var threshold = NumberRow(dlg, "Colour threshold:", 0, 1000, 60, "Higher means less colour in faint, noisy areas");
    var brightness = NumberRow(dlg, "Brightness %:", 10, 1000, 100, "Percent of the automatic brightness");
 
@@ -483,7 +518,7 @@ function main() {
 
    if (dlg.execute()) {
       console.show();
-      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, threshold.value, brightness.value/100);
+      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, threshold.value, brightness.value/100);
    }
 }
 
