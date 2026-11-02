@@ -222,7 +222,7 @@ def Prepare(f, balance, lift=0):
     return bad
 
 
-def Colour(f, bad, threshold, gain, gamma):
+def Colour(f, bad, threshold, gain, gamma, saturation=1):
     """f prepared by Prepare(): returns display red, green, blue, 0 to 1, as float32."""
     hh, ww = f[0].shape
     nw, nh = (ww - 1)//NOISE_BLOCK, hh//NOISE_BLOCK
@@ -236,7 +236,7 @@ def Colour(f, bad, threshold, gain, gamma):
 
     d2r = np.pi/180
     push = np.array([[np.cos(HUE_BLUE*d2r), np.sin(HUE_BLUE*d2r)],
-                     [np.cos(HUE_RED*d2r), np.sin(HUE_RED*d2r)]], dtype=np.float32)*CHROMA*RED_PUSH
+                     [np.cos(HUE_RED*d2r), np.sin(HUE_RED*d2r)]], dtype=np.float32)*CHROMA*saturation*RED_PUSH
     fx = np.arange(ww, dtype=np.float32)*(nw - 1)/max(ww - 1, 1)
     gx = fx.astype(np.int32)
     gx1 = np.minimum(gx + 1, nw - 1)
@@ -275,8 +275,8 @@ def Colour(f, bad, threshold, gain, gamma):
         lo = np.where(side, HUE_CYAN[0], HUE_GOLD[0])
         hi = np.where(side, HUE_CYAN[1], HUE_GOLD[1])
         hue = (lo + (hi - lo)*u)*d2r
-        a = np.abs(x)*CHROMA*np.cos(hue)
-        b = np.abs(x)*CHROMA*np.sin(hue)
+        a = np.abs(x)*CHROMA*saturation*np.cos(hue)
+        b = np.abs(x)*CHROMA*saturation*np.sin(hue)
 
         # The red to blue push
         red = (t > 0).astype(np.int32)
@@ -366,6 +366,8 @@ def main():
                     help='colour balance, + towards gold, - towards cyan (default 8)')
     ap.add_argument('--lift', type=float, default=0,
                     help='lift the blacks, percent of the median brightness (default 0)')
+    ap.add_argument('--saturation', type=float, default=1,
+                    help='multiplies the colour, for example 0.9 (default 1)')
     ap.add_argument('--threshold', type=float, default=60,
                     help='higher means less colour in the faint noisy areas (default 60)')
     ap.add_argument('--brightness', type=float, default=1,
@@ -400,7 +402,7 @@ def main():
     bad = Prepare(f, args.balance, args.lift)
     gain = AutoGain(f, bad, args.brightness)
     print('Making the colours')
-    rgb = Colour(f, bad, args.threshold, gain, GAMMA)
+    rgb = Colour(f, bad, args.threshold, gain, GAMMA, args.saturation)
     tifffile.imwrite(out, (rgb*65535 + .5).astype(np.uint16), photometric='rgb')
     print('Wrote %s' % out)
 

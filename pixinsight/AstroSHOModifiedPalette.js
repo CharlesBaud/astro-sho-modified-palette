@@ -301,7 +301,7 @@ function AutoGain(f, bad, ww, hh, brightness, log) {
 }
 
 // f prepared by Prepare(): returns display red, green, blue, 0 to 1
-function Colour(f, bad, ww, hh, threshold, gain, log) {
+function Colour(f, bad, ww, hh, threshold, gain, saturation, log) {
    var n = ww*hh, nw = Math.floor((ww - 1)/NOISE_BLOCK), nh = Math.floor(hh/NOISE_BLOCK), knorm = threshold/(2*COLOUR_R + 1);
    var i, l, w, h;
    var g0 = SmoothNoise(NoiseGrid(f[0], ww, nw, nh), nw, nh), g1 = SmoothNoise(NoiseGrid(f[1], ww, nw, nh), nw, nh), g2 = SmoothNoise(NoiseGrid(f[2], ww, nw, nh), nw, nh);
@@ -324,8 +324,8 @@ function Colour(f, bad, ww, hh, threshold, gain, log) {
 
    var eq = GasEqualise(m, gall, nw, nh, ww, hh, bad);
    var d2r = Math.PI/180;
-   var pushA = [CHROMA*RED_PUSH*Math.cos(HUE_BLUE*d2r), CHROMA*RED_PUSH*Math.cos(HUE_RED*d2r)];
-   var pushB = [CHROMA*RED_PUSH*Math.sin(HUE_BLUE*d2r), CHROMA*RED_PUSH*Math.sin(HUE_RED*d2r)];
+   var pushA = [CHROMA*saturation*RED_PUSH*Math.cos(HUE_BLUE*d2r), CHROMA*saturation*RED_PUSH*Math.cos(HUE_RED*d2r)];
+   var pushB = [CHROMA*saturation*RED_PUSH*Math.sin(HUE_BLUE*d2r), CHROMA*saturation*RED_PUSH*Math.sin(HUE_RED*d2r)];
    var r = new Float32Array(n), g = new Float32Array(n), b = new Float32Array(n), dg = 1/2.2, lc = 2.2/3;
 
    for (h = 0; h < hh; h++) {
@@ -354,7 +354,7 @@ function Colour(f, bad, ww, hh, threshold, gain, log) {
          else if (u >= EQ_BINS) u = 1;
          else { iu = Math.floor(u); u = eq[side][iu] + (u - iu)*(eq[side][iu + 1] - eq[side][iu]); }
          var ends = side ? HUE_CYAN : HUE_GOLD, hue = (ends[0] + (ends[1] - ends[0])*u)*d2r;
-         var A = Math.abs(x)*CHROMA*Math.cos(hue), B = Math.abs(x)*CHROMA*Math.sin(hue);
+         var A = Math.abs(x)*CHROMA*saturation*Math.cos(hue), B = Math.abs(x)*CHROMA*saturation*Math.sin(hue);
 
          // The red to blue push
          var red = tt > 0 ? 1 : 0, at = Math.abs(tt);
@@ -421,7 +421,7 @@ function Check(views) {
    return null;
 }
 
-function Run(views, balance, lift, threshold, brightness) {
+function Run(views, balance, lift, saturation, threshold, brightness) {
    var ww = views[0].image.width, hh = views[0].image.height, f = [], l, rect = new Rect(0, 0, ww, hh);
    for (l = 0; l < 3; l++) {
       f[l] = new Float32Array(ww*hh);
@@ -433,7 +433,7 @@ function Run(views, balance, lift, threshold, brightness) {
       ShowError("These images look empty: nothing stands above the sky.");
       return;
    }
-   var out = Colour(f, bad, ww, hh, threshold, gain, Log);
+   var out = Colour(f, bad, ww, hh, threshold, gain, saturation, Log);
    f = null;
    var win = new ImageWindow(ww, hh, 3, 32, true, true, "SHO_modified");
    win.mainView.beginProcess();
@@ -498,6 +498,7 @@ function main() {
    var sii = ImageRow(dlg, "SII:", ["sii", "s2"]);
    var balance = NumberRow(dlg, "Colour balance:", -100, 100, 8, "Higher is more gold, negative is more cyan");
    var lift = NumberRow(dlg, "Lift blacks %:", 0, 100, 0, "Lifts dark areas by this percent of the median brightness");
+   var saturation = NumberRow(dlg, "Saturation %:", 0, 200, 100, "Percent of the normal colour");
    var threshold = NumberRow(dlg, "Colour threshold:", 0, 1000, 60, "Higher means less colour in faint, noisy areas");
    var brightness = NumberRow(dlg, "Brightness %:", 10, 1000, 100, "Percent of the automatic brightness");
 
@@ -518,7 +519,7 @@ function main() {
 
    if (dlg.execute()) {
       console.show();
-      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, threshold.value, brightness.value/100);
+      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, saturation.value/100, threshold.value, brightness.value/100);
    }
 }
 

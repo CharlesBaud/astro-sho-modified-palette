@@ -5,7 +5,7 @@ without star removal, green removal or hand tuning.
 
 ![M16: plain SHO on the left, this palette on the right](docs/m16-compare.jpg)
 
-*M16, Hubble data, the whole mosaic from 48 exposures with its real edges. The streak at top left is an optical ghost in the camera. Left: plain SHO. Right: this palette, with balance 12, blacks lifted 15% and the brightness set by hand.*
+*M16, Hubble data, the whole mosaic from 48 exposures with its real edges. The streak at top left is an optical ghost in the camera. Left: plain SHO. Right: this palette, with balance 12, blacks lifted 15%, saturation 0.9 and the brightness set by hand.*
 
 ## Use it
 
@@ -51,6 +51,7 @@ You shouldn't need these to begin with.
 | `-o name.tif` | `sho-palette.tif` beside the Ha image | Output file |
 | `--balance` | 8 | Colour balance: higher is more gold, negative is more cyan |
 | `--lift` | 0 | Lifts dark areas by this percent of the median brightness, for example 15 |
+| `--saturation` | 1 | Multiplies the colour, for example 0.9 |
 | `--threshold` | 60 | Higher means less colour in faint, noisy areas |
 | `--brightness` | 1 | Multiplies the automatic brightness, for example 1.5 or 0.7 |
 
