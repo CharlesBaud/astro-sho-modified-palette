@@ -54,6 +54,8 @@ BAL_STARS = 8      # Fewest stars to trust a star balance
 BAL_STARS_MAX = 300
 BAL_BOX = 12       # A star is the peak of a box of this radius, with a ring round it
 BAL_AP = 5         # Aperture its flux is measured in
+GAS_STEP = 4       # Every this many pixels for the gas balance
+GAS_SHARE = 10     # The gas is the brightest 1 in this many pixels of Ha
 BAL_TILE = 32      # One candidate star from each tile of this size
 BAL_MAX = 4000     # Most candidates
 CHUNK = 256        # Rows done at a time, to save memory
@@ -191,9 +193,29 @@ def InRange(r, g, b):
     return (np.minimum(np.minimum(r, g), b) >= -1e-3) & (np.maximum(np.maximum(r, g), b) <= 1.001)
 
 
-def Prepare(f, balance, lift=0):
+def GasRatios(f, bad):
+    """OIII and SII over Ha, medians over the brightest part of Ha; None if there is no gas to use."""
+    ha = f[0].ravel()[::GAS_STEP]
+    good = ~bad.ravel()[::GAS_STEP]
+    a = ha[good]
+    if a.size < 2*GAS_SHARE:
+        return None
+    k = a.size - a.size//GAS_SHARE
+    top = good & (ha > np.partition(a, k)[k])
+    med = []
+    for l in f:
+        v = l.ravel()[::GAS_STEP][top]
+        med.append(np.partition(v, v.size//2)[v.size//2] if v.size > 0 else 0)
+    if min(med) <= 0:
+        print('Gas balance not used: no gas above the sky in every filter')
+        return None
+    return med[1]/med[0], med[2]/med[0]
+
+
+def Prepare(f, balance, lift=0, gas=0):
     """Takes off the sky, balances the filters and lifts the blacks by lift percent of the median
-    brightness, in place; returns the invalid pixel mask."""
+    brightness, in place; returns the invalid pixel mask. gas is the percent of the filter scaling
+    that comes from the gas instead of the stars."""
     bad = ~np.isfinite(f[0]) | ~np.isfinite(f[1]) | ~np.isfinite(f[2])
     for l in f:
         l[~np.isfinite(l)] = 0
@@ -208,6 +230,13 @@ def Prepare(f, balance, lift=0):
         print('Only %d usable stars: star colours may be off' % used)
     print('Star balance: OIII %.3f, SII %.3f from %d stars' % (bo, bs, used))
     bo, bs = (np.clip(x, BAL_LIMIT, 1/BAL_LIMIT) for x in (bo, bs))
+    if gas > 0:
+        ratios = GasRatios(f, bad)
+        if ratios is not None:
+            k = min(gas/100, 1)
+            print('Gas balance: OIII %.3f, SII %.3f, share %.2f' % (ratios[0], ratios[1], k))
+            bo = bo**(1 - k)*ratios[0]**k  # On the ratios, so 50 is half way by eye
+            bs = bs**(1 - k)*ratios[1]**k
     f[1] /= bo
     f[2] /= bs
     if balance < 0:
@@ -366,6 +395,8 @@ def main():
                     help='colour balance, + towards gold, - towards cyan (default 8)')
     ap.add_argument('--lift', type=float, default=0,
                     help='lift the blacks, percent of the median brightness (default 0)')
+    ap.add_argument('--gas-balance', type=float, default=0,
+                    help='percent of the filter scaling taken from the gas, not the stars (default 0)')
     ap.add_argument('--saturation', type=float, default=1,
                     help='multiplies the colour, for example 0.9 (default 1)')
     ap.add_argument('--threshold', type=float, default=60,
@@ -399,7 +430,7 @@ def main():
     for l in f:
         l /= top
 
-    bad = Prepare(f, args.balance, args.lift)
+    bad = Prepare(f, args.balance, args.lift, args.gas_balance)
     gain = AutoGain(f, bad, args.brightness)
     print('Making the colours')
     rgb = Colour(f, bad, args.threshold, gain, GAMMA, args.saturation)

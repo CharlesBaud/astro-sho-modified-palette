@@ -38,6 +38,8 @@ var BAL_STARS = 8;     // Fewest stars to trust a star balance
 var BAL_STARS_MAX = 300;
 var BAL_BOX = 12;      // A star is the peak of a box of this radius, with a ring round it
 var BAL_AP = 5;        // Aperture its flux is measured in
+var GAS_STEP = 4;      // Every this many pixels for the gas balance
+var GAS_SHARE = 10;    // The gas is the brightest 1 in this many pixels of Ha
 var BAL_TILE = 32;     // One candidate star from each tile of this size
 var BAL_MAX = 4000;    // Most candidates
 var GAMMA = 20.0;      // Stretch: v = 1 - (1 - gain*Y)^GAMMA
@@ -241,8 +243,32 @@ function InRange() {
    return Math.min(OK_RGB[0], OK_RGB[1], OK_RGB[2]) >= -1e-3 && Math.max(OK_RGB[0], OK_RGB[1], OK_RGB[2]) <= 1.001;
 }
 
-// Takes off the sky and balances the filters in place; returns the invalid pixel mask
-function Prepare(f, ww, hh, balance, lift, log) {
+// OIII and SII over Ha, medians over the brightest part of Ha; null if there is no gas to use
+function GasRatios(f, bad, n, log) {
+   var numeric = function (a, b) { return a - b; };
+   var a = [], med = [], i, l, th;
+   for (i = 0; i < n; i += GAS_STEP)
+      if (!bad[i]) a.push(f[0][i]);
+   if (a.length < 2*GAS_SHARE) return null;
+   a.sort(numeric);
+   th = a[a.length - Math.floor(a.length/GAS_SHARE)];
+   for (l = 0; l < 3; l++) {
+      a = [];
+      for (i = 0; i < n; i += GAS_STEP)
+         if (!bad[i] && f[0][i] > th) a.push(f[l][i]);
+      a.sort(numeric);
+      med[l] = a.length > 0 ? a[a.length >> 1] : 0;
+   }
+   if (med[0] <= 0 || med[1] <= 0 || med[2] <= 0) {
+      log("Gas balance not used: no gas above the sky in every filter");
+      return null;
+   }
+   return { o: med[1]/med[0], s: med[2]/med[0] };
+}
+
+// Takes off the sky and balances the filters in place; returns the invalid pixel mask.
+// gas is the percent of the filter scaling that comes from the gas instead of the stars.
+function Prepare(f, ww, hh, balance, lift, gas, log) {
    var n = ww*hh, bad = new Uint8Array(n), i, l, v;
    for (l = 0; l < 3; l++)
       for (i = 0; i < n; i++) {
@@ -260,6 +286,14 @@ function Prepare(f, ww, hh, balance, lift, log) {
    if (b.used < BAL_STARS) log("Only " + b.used + " usable stars: star colours may be off");
    log("Star balance: OIII " + b.o.toFixed(3) + ", SII " + b.s.toFixed(3) + " from " + b.used + " stars");
    var bo = Math.min(Math.max(b.o, BAL_LIMIT), 1/BAL_LIMIT), bs = Math.min(Math.max(b.s, BAL_LIMIT), 1/BAL_LIMIT);
+   if (gas > 0) {
+      var r = GasRatios(f, bad, n, log), k = Math.min(gas/100, 1);
+      if (r != null) {
+         log("Gas balance: OIII " + r.o.toFixed(3) + ", SII " + r.s.toFixed(3) + ", share " + k.toFixed(2));
+         bo = Math.pow(bo, 1 - k)*Math.pow(r.o, k); // On the ratios, so 50 is half way by eye
+         bs = Math.pow(bs, 1 - k)*Math.pow(r.s, k);
+      }
+   }
    var ko = balance < 0 ? -balance/100 : 0, ks = balance > 0 ? balance/100 : 0;
    for (i = 0; i < n; i++) {
       f[1][i] /= bo;
@@ -421,13 +455,13 @@ function Check(views) {
    return null;
 }
 
-function Run(views, balance, lift, saturation, threshold, brightness) {
+function Run(views, balance, lift, gas, saturation, threshold, brightness) {
    var ww = views[0].image.width, hh = views[0].image.height, f = [], l, rect = new Rect(0, 0, ww, hh);
    for (l = 0; l < 3; l++) {
       f[l] = new Float32Array(ww*hh);
       views[l].image.getSamples(f[l], rect, 0);
    }
-   var bad = Prepare(f, ww, hh, balance, lift, Log);
+   var bad = Prepare(f, ww, hh, balance, lift, gas, Log);
    var gain = AutoGain(f, bad, ww, hh, brightness, Log);
    if (!(gain > 0)) {
       ShowError("These images look empty: nothing stands above the sky.");
@@ -498,6 +532,7 @@ function main() {
    var sii = ImageRow(dlg, "SII:", ["sii", "s2"]);
    var balance = NumberRow(dlg, "Colour balance:", -100, 100, 8, "Higher is more gold, negative is more cyan");
    var lift = NumberRow(dlg, "Lift blacks %:", 0, 100, 0, "Lifts dark areas by this percent of the median brightness");
+   var gas = NumberRow(dlg, "Gas balance %:", 0, 100, 0, "Percent of the filter scaling taken from the gas, not the stars");
    var saturation = NumberRow(dlg, "Saturation %:", 0, 200, 100, "Percent of the normal colour");
    var threshold = NumberRow(dlg, "Colour threshold:", 0, 1000, 60, "Higher means less colour in faint, noisy areas");
    var brightness = NumberRow(dlg, "Brightness %:", 10, 1000, 100, "Percent of the automatic brightness");
@@ -519,7 +554,7 @@ function main() {
 
    if (dlg.execute()) {
       console.show();
-      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, saturation.value/100, threshold.value, brightness.value/100);
+      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, gas.value, saturation.value/100, threshold.value, brightness.value/100);
    }
 }
 

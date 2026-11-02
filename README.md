@@ -51,6 +51,7 @@ You shouldn't need these to begin with.
 | `-o name.tif` | `sho-palette.tif` beside the Ha image | Output file |
 | `--balance` | 8 | Colour balance: higher is more gold, negative is more cyan |
 | `--lift` | 0 | Lifts dark areas by this percent of the median brightness, for example 15 |
+| `--gas-balance` | 0 | Percent of the filter scaling taken from the gas instead of the stars, 0 to 100 |
 | `--saturation` | 1 | Multiplies the colour, for example 0.9 |
 | `--threshold` | 60 | Higher means less colour in faint, noisy areas |
 | `--brightness` | 1 | Multiplies the automatic brightness, for example 1.5 or 0.7 |
@@ -130,6 +131,9 @@ lot. It's there to show the starting point.
   and crop afterwards.
 - **Fields with very reddened stars.** M16 is one. The star balance is limited to a factor of 4, so
   its stars can keep some colour.
+- **Stars and gas far apart.** The star balance can leave too little colour in the gas. Hubble's
+  Butterfly Nebula (NGC 6302) is the case found so far, and `--gas-balance 100` fixes it. Leave it at
+  0 otherwise: M16, the Elephant's Trunk, NGC 6888 and the Rosette all looked worse at 50 to 100.
 - **Very few stars.** With fewer than 8 usable stars there is no star balance, and the tool says so.
 - **It isn't scientific colour.** Like SHO, it's a way of showing the differences between filters.
 - **Speed.** About 1 minute for a 33 megapixel image on a Raspberry Pi 5. A 62 megapixel image needs
