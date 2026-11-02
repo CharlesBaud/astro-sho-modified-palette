@@ -70,6 +70,7 @@ SPIKE_QUIET = 4.0  # Other filter shows nothing: under this many of its noise si
 SPIKE_R = 0.03     # or under this fraction of the spike
 MIN_GOOD = 8    # Good neighbours wanted to repair a flagged pixel
 MAX_R = 32      # Furthest search; beyond, no data (in practice only the chip gap)
+REPAIR_BATCH = 20000  # Flagged pixels repaired at a time: at most about 700 MB of windows
 NEIGHBOURS = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=bool)
 
 
@@ -86,11 +87,16 @@ def RepairFlagged(e, bad):
     r = 2
     while len(todo) and r <= MAX_R:
         k = 2*r + 1  # Windows of the pixels still to do, from the padded view
-        win = sliding_window_view(vp, (k, k))[ys[todo] + MAX_R - r, xs[todo] + MAX_R - r].reshape(len(todo), k*k)
-        ok = np.count_nonzero(~np.isnan(win), axis=1) >= MIN_GOOD
-        if ok.any():
-            out[todo[ok]] = np.nanmedian(win[ok], axis=1)
-        todo = todo[~ok]
+        view = sliding_window_view(vp, (k, k))
+        left = []
+        for i in range(0, len(todo), REPAIR_BATCH):  # In batches: each window is a copy in memory
+            t = todo[i:i + REPAIR_BATCH]
+            win = view[ys[t] + MAX_R - r, xs[t] + MAX_R - r].reshape(len(t), k*k)
+            ok = np.count_nonzero(~np.isnan(win), axis=1) >= MIN_GOOD
+            if ok.any():
+                out[t[ok]] = np.nanmedian(win[ok], axis=1)
+            left.append(t[~ok])
+        todo = np.concatenate(left)
         r = r*2 if r < 8 else r + 8  # 2, 4, 8, 16, 24, 32
     e = e.copy()
     e[ys, xs] = out
