@@ -330,6 +330,9 @@ def main():
         h = fits.open(f, memmap=True)
         p = h[0].header
         when = datetime.datetime.fromisoformat('%sT%s' % (p['DATE-OBS'], p['TIME-OBS']))
+        if p.get('EXPFLAG', 'NORMAL') != 'NORMAL':  # Shutter not opened on the target: an empty frame
+            print('Skipped %s: %s' % (os.path.basename(f), p['EXPFLAG']))
+            continue
         frames.append((p['FILTER'], when, f))
     frames.sort(key=lambda x: (SLOT.get(x[0], 9), x[1]))
 
