@@ -52,6 +52,7 @@ You shouldn't need these to begin with.
 | `--balance` | 8 | Colour balance: higher is more gold, negative is more cyan |
 | `--lift` | 0 | Lifts dark areas by this percent of the median brightness, for example 15 |
 | `--gas-balance` | 0 | Percent of the filter scaling taken from the gas instead of the stars, 0 to 100 |
+| `--hue-shift` | 0 | Turns all the colours, in degrees: + gold to yellow and teal to blue, - gold to red and teal to green, for example 10 or -10. Stars stay white. Since November 2026 the default colours are turned by 10 degrees; `--hue-shift -10` gives the earlier look |
 | `--saturation` | 1 | Multiplies the colour, for example 0.9 |
 | `--threshold` | 60 | Higher means less colour in faint, noisy areas |
 | `--brightness` | 1 | Multiplies the automatic brightness, for example 1.5 or 0.7 |

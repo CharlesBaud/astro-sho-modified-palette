@@ -41,6 +41,8 @@ HUE_RED = 30.0     # Direction of the push for high Ha
 HUE_BLUE = 265.0   # and for low Ha
 HUE_GOLD = (110.0, 40.0)   # Gold end of the axis, at low Ha and at high Ha
 HUE_CYAN = (190.0, 235.0)  # Cyan end of the axis, at low Ha and at high Ha
+HUE_ZERO = 10.0    # All the hues above turned by this, so a hue shift of 0 is the middle of
+                   # the range preferred on M16 and NGC 6888; -10 gives the earlier colours
 
 COLOUR_R = 3       # Colour comes from 7x7 means: it needs less detail than brightness
 STAR_R = 15        # Surroundings a star is measured against
@@ -251,7 +253,7 @@ def Prepare(f, balance, lift=0, gas=0):
     return bad
 
 
-def Colour(f, bad, threshold, gain, gamma, saturation=1):
+def Colour(f, bad, threshold, gain, gamma, saturation=1, hue_shift=0):
     """f prepared by Prepare(): returns display red, green, blue, 0 to 1, as float32."""
     hh, ww = f[0].shape
     nw, nh = (ww - 1)//NOISE_BLOCK, hh//NOISE_BLOCK
@@ -264,8 +266,9 @@ def Colour(f, bad, threshold, gain, gamma, saturation=1):
     eq = GasEqualise(m, gall, bad)
 
     d2r = np.pi/180
-    push = np.array([[np.cos(HUE_BLUE*d2r), np.sin(HUE_BLUE*d2r)],
-                     [np.cos(HUE_RED*d2r), np.sin(HUE_RED*d2r)]], dtype=np.float32)*CHROMA*saturation*RED_PUSH
+    turn = HUE_ZERO + hue_shift  # Turns the gold, cyan, red and blue together
+    push = np.array([[np.cos((HUE_BLUE + turn)*d2r), np.sin((HUE_BLUE + turn)*d2r)],
+                     [np.cos((HUE_RED + turn)*d2r), np.sin((HUE_RED + turn)*d2r)]], dtype=np.float32)*CHROMA*saturation*RED_PUSH
     fx = np.arange(ww, dtype=np.float32)*(nw - 1)/max(ww - 1, 1)
     gx = fx.astype(np.int32)
     gx1 = np.minimum(gx + 1, nw - 1)
@@ -303,7 +306,7 @@ def Colour(f, bad, threshold, gain, gamma, saturation=1):
         u = np.where(q <= EQ_LO, 0, np.where(q >= EQ_HI, 1, u))
         lo = np.where(side, HUE_CYAN[0], HUE_GOLD[0])
         hi = np.where(side, HUE_CYAN[1], HUE_GOLD[1])
-        hue = (lo + (hi - lo)*u)*d2r
+        hue = (lo + (hi - lo)*u + turn)*d2r
         a = np.abs(x)*CHROMA*saturation*np.cos(hue)
         b = np.abs(x)*CHROMA*saturation*np.sin(hue)
 
@@ -397,6 +400,9 @@ def main():
                     help='lift the blacks, percent of the median brightness (default 0)')
     ap.add_argument('--gas-balance', type=float, default=0,
                     help='percent of the filter scaling taken from the gas, not the stars (default 0)')
+    ap.add_argument('--hue-shift', type=float, default=0,
+                    help='degrees all the colours turn: + gold to yellow and teal to blue, '
+                         '- gold to red and teal to green (default 0)')
     ap.add_argument('--saturation', type=float, default=1,
                     help='multiplies the colour, for example 0.9 (default 1)')
     ap.add_argument('--threshold', type=float, default=60,
@@ -433,7 +439,9 @@ def main():
     bad = Prepare(f, args.balance, args.lift, args.gas_balance)
     gain = AutoGain(f, bad, args.brightness)
     print('Making the colours')
-    rgb = Colour(f, bad, args.threshold, gain, GAMMA, args.saturation)
+    if args.hue_shift:
+        print('Hue shift %+g degrees' % args.hue_shift)
+    rgb = Colour(f, bad, args.threshold, gain, GAMMA, args.saturation, args.hue_shift)
     tifffile.imwrite(out, (rgb*65535 + .5).astype(np.uint16), photometric='rgb')
     print('Wrote %s' % out)
 
