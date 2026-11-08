@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Store Hubble WFC3/UVIS exposures (flc files) as ASICap ZWO style FITS frames.
+"""Store Hubble WFC3/UVIS or ACS/WFC exposures (flc files) as ASICap ZWO style FITS frames.
 
-Each flc holds the two UVIS chips (SCI,1 is UVIS2, SCI,2 is UVIS1), calibrated, in
-electrons. They are joined as on the camera, UVIS2 at the bottom, the chip gap of 31
-rows as 0 (zeroInvalid), UVIS1 on top. Pixels flagged bad in the DQ arrays, cosmic
+Each flc holds the two chips (SCI,1 is UVIS2 or WFC2, SCI,2 is UVIS1 or WFC1), calibrated,
+in electrons. They are joined as on the camera, chip 2 at the bottom, the chip gap (31 rows
+on UVIS, 50 on WFC) as 0 (zeroInvalid), chip 1 on top. ACS is strongly distorted: use
+mosaic, which corrects it from the headers. Pixels flagged bad in the DQ arrays, cosmic
 rays found on each exposure (L.A.Cosmic) and dark charge trap lines are replaced by the median around them, giving 4096 x 4133. Exposure times differ between filters
 (Ha 400 s, OIII 950 s, SII 665 s), so values are electrons per second times NORM_S times ADU_PER_E for
 every filter, as if all exposures were NORM_S long, plus a 1000 offset so negative
@@ -11,7 +12,8 @@ noise survives, clipped to 0-65535, uint16 (BZERO 32768) like ASICap.
 
 One run directory per filter named from its first exposure, files
 YYYY-MM-DD-HHMM_S-<slot>-CapObj_NNNN.FIT, slots as the wheel: Ha 3, OIII 4, SII 5
-([NII] F658N takes slot 5 when there is no SII).
+([NII] F658N takes slot 5 when there is no SII; on ACS it is the Ha filter), and broadband
+red/I 1, green/V 2, blue/B 6.
 
 Exposures come from MAST (mast.stsci.edu), e.g. NGC 6960 Veil (proposal 14056 visit 02)
 or NGC 6888 (proposal 17882): the *_flc.fits files of each filter's association.
@@ -35,8 +37,12 @@ SRC = sys.argv[1]
 OUT = sys.argv[2]
 MOSAIC = len(sys.argv) > 3 and sys.argv[3] == 'mosaic'
 GRID = 32       # Sky grid to chip positions computed every this many pixels, interpolated between
-SLOT = {'F656N': 3, 'F657N': 3, 'F502N': 4, 'F673N': 5, 'F658N': 5}
-GAP = 31        # UVIS chip gap in rows
+SLOT = {'F656N': 3, 'F657N': 3, 'F502N': 4, 'F673N': 5, 'F658N': 5,
+        'F814W': 1, 'F775W': 1, 'F625W': 1, 'F555W': 2, 'F606W': 2, 'F550M': 2, 'F435W': 6, 'F475W': 6}
+# Chip gap in rows, read noise in electrons, DQ bits repaired. ACS/WFC also has warm pixels (64,
+# 1.5% of a chip) and bad columns (128): with two frames a filter the stack cannot reject them
+CAMERA = {'WFC3/UVIS': (31, 3.1, 4 | 16 | 32 | 512 | 1024), 'ACS/WFC': (50, 4.0, 4 | 16 | 32 | 64 | 128 | 512)}
+GAP = 31        # Chip gap in rows, set for each frame's camera from CAMERA
 EDGE_DEAD = 3   # Chip rows next to the gap, all flagged: no data like the gap
 EDGE_MEDIAN = 7 # The next rows have bright unflagged spikes (p99.9 2-4x mid chip), where
                 # the dithered gaps crossed they gave RGB spikes: 3x3 median filtered
@@ -52,7 +58,7 @@ DQMASK = 4 | 16 | 32 | 512 | 1024  # Bad, hot, warm, bad flat, charge trap: repa
 DQ_CR = 4096    # Hubble's cosmic ray flag: repaired, except on a star
 E_MIN, E_MAX = -500.0, 3e5  # Electrons no pixel can hold: the calibration leaves some at +-1e8 (DQ
                 # 4096, not otherwise a defect): repaired, or clipped to 0 they read as no data
-READNOISE = 3.1 # UVIS read noise, electrons
+READNOISE = 3.1 # Read noise, electrons, set for each frame's camera from CAMERA
 DARK_RUN = 31   # Dark lines: rows of the median along each column
 DARK_AROUND = 21 # columns of the median across, the level beside the line
 DARK_K = 5.0    # How far below that level, in noise sigma of the column median
@@ -324,7 +330,23 @@ def RepairOneFrameSpikes(paths):
                     fits.PrimaryHDU(fixed, header=h[0].header).writeto(p, overwrite=True)
 
 
+def FilterName(p):
+    """WFC3 has one filter keyword; ACS two wheels, one of them CLEAR."""
+    if p.get('FILTER'):
+        return p['FILTER']
+    for k in ('FILTER1', 'FILTER2'):
+        f = str(p.get(k, '')).strip()
+        if f and not f.startswith('CLEAR'):
+            return f
+    return 'CLEAR'
+
+
+def Camera(p):
+    return '%s/%s' % (str(p.get('INSTRUME', '')).strip(), str(p.get('DETECTOR', '')).strip())
+
+
 def main():
+    global GAP, READNOISE, DQMASK
     frames = []
     for f in sorted(glob.glob(os.path.join(SRC, '*_flc.fits'))):
         h = fits.open(f, memmap=True)
@@ -333,7 +355,10 @@ def main():
         if p.get('EXPFLAG', 'NORMAL') != 'NORMAL':  # Shutter not opened on the target: an empty frame
             print('Skipped %s: %s' % (os.path.basename(f), p['EXPFLAG']))
             continue
-        frames.append((p['FILTER'], when, f))
+        if Camera(p) not in CAMERA:
+            print('Skipped %s: camera %s not known' % (os.path.basename(f), Camera(p)))
+            continue
+        frames.append((FilterName(p), when, f))
     frames.sort(key=lambda x: (SLOT.get(x[0], 9), x[1]))
 
     os.makedirs(OUT, exist_ok=True)
@@ -354,6 +379,7 @@ def main():
 
         h = fits.open(f, memmap=True)
         p = h[0].header
+        GAP, READNOISE, DQMASK = CAMERA[Camera(p)]
         # Hot pixels are fixed on the chip, the star matcher would align frames on them;
         # cosmic rays cannot be rejected by the stack with only 2-4 exposures a filter
         uvis2, cr2 = CleanChip(*LoadChip(h, 1))
@@ -383,7 +409,7 @@ def main():
                               ('SWCREATE', 'hst2zwo', os.path.basename(f)),
                               ('DATE-OBS', when.isoformat(timespec='milliseconds'), 'UTC start date of observation'),
                               ('BAYERPAT', 'NONE', 'Debayer pattern'), ('COLORTYP', 'RAW16', 'Color space'),
-                              ('INSTRUME', 'HST WFC3/UVIS', 'Camera model'), ('FILTER', filt, 'HST filter'),
+                              ('INSTRUME', 'HST ' + Camera(p), 'Camera model'), ('FILTER', filt, 'HST filter'),
                               ('XPIXSZ', 15.0, 'Pixel Width in um'), ('YPIXSZ', 15.0, 'Pixel Height in um'),
                               ('EXPOSURE', NORM_S, 'Normalised exposure (s), real %.0f' % p['EXPTIME']),
                               ('EXPTIME', NORM_S, 'Normalised exposure (s), real %.0f' % p['EXPTIME'])):

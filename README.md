@@ -142,7 +142,7 @@ lot. It's there to show the starting point.
 
 ## Hubble data
 
-`tools/hst2zwo.py` turns Hubble WFC3/UVIS exposures (`*_flc.fits` from
+`tools/hst2zwo.py` turns Hubble WFC3/UVIS or ACS/WFC exposures (`*_flc.fits` from
 [MAST](https://mast.stsci.edu)) into 16 bit FITS frames, in folders laid out as ZWO's ASICap names
 them. It repairs bad pixels, cosmic rays, specks and dark charge trap lines, one exposure at a time.
 With `mosaic` it also matches the exposures' levels, and on sets of up to 18 frames it compares the
@@ -153,9 +153,11 @@ pip install numpy scipy astropy astroscrappy
 python3 tools/hst2zwo.py <flc folder> <output folder> [mosaic]
 ```
 
-Add `mosaic` to place all exposures on one sky grid. The frames still need stacking, and with
-`mosaic` they're already aligned, so the stacker shouldn't align them again. Its thresholds have
-been tuned on M16 only.
+Add `mosaic` to place all exposures on one sky grid, which also corrects ACS's strong distortion
+from the headers, so use it for ACS. The frames still need stacking, and with `mosaic` they're
+already aligned, so the stacker shouldn't align them again. Narrowband filters go in the wheel
+slots Ha 3, OIII 4, SII 5 (F658N in 5, or as Ha on ACS); broadband red/I 1, green/V 2, blue/B 6.
+Its thresholds have been tuned on M16; ACS was tried on NGC 281 (proposal 10713).
 
 ## Credits
 
