@@ -337,7 +337,9 @@ function AutoGain(f, bad, ww, hh, brightness, log) {
 }
 
 // f prepared by Prepare(): returns display red, green, blue, 0 to 1
-function Colour(f, bad, ww, hh, threshold, gain, saturation, hueShift, log) {
+var DARK_SCALE = .1; // Dark Detail lifts display values well under this: d + s d exp(-d/DARK_SCALE)
+
+function Colour(f, bad, ww, hh, threshold, gain, saturation, hueShift, darkDetail, log) {
    var n = ww*hh, nw = Math.floor((ww - 1)/NOISE_BLOCK), nh = Math.floor(hh/NOISE_BLOCK), knorm = threshold/(2*COLOUR_R + 1);
    var i, l, w, h;
    var g0 = SmoothNoise(NoiseGrid(f[0], ww, nw, nh), nw, nh), g1 = SmoothNoise(NoiseGrid(f[1], ww, nw, nh), nw, nh), g2 = SmoothNoise(NoiseGrid(f[2], ww, nw, nh), nw, nh);
@@ -408,6 +410,11 @@ function Colour(f, bad, ww, hh, threshold, gain, saturation, hueShift, log) {
          // Brightness
          var v = gain*lum;
          v = v <= 0 ? 0 : (v >= 1 ? 1 : 1 - Math.pow(1 - v, GAMMA));
+         if (darkDetail > 0 && v > 0) { // Faint and dark parts brought up, the bright half untouched
+            var dv = Math.pow(v, dg);
+            dv += darkDetail*dv*Math.exp(-dv/DARK_SCALE);
+            v = Math.min(Math.pow(dv, 2.2), 1);
+         }
          var L = Math.pow(v, lc);
 
          // Out of range: the chroma that just fits, so no channel clips and hues hold
@@ -458,7 +465,7 @@ function Check(views) {
    return null;
 }
 
-function Run(views, balance, lift, gas, hueShift, saturation, threshold, brightness) {
+function Run(views, balance, lift, gas, hueShift, darkDetail, saturation, threshold, brightness) {
    var ww = views[0].image.width, hh = views[0].image.height, f = [], l, rect = new Rect(0, 0, ww, hh);
    for (l = 0; l < 3; l++) {
       f[l] = new Float32Array(ww*hh);
@@ -471,7 +478,8 @@ function Run(views, balance, lift, gas, hueShift, saturation, threshold, brightn
       return;
    }
    if (hueShift != 0) Log("Hue shift " + hueShift + " degrees");
-   var out = Colour(f, bad, ww, hh, threshold, gain, saturation, hueShift, Log);
+   if (darkDetail != 0) Log("Dark detail " + darkDetail);
+   var out = Colour(f, bad, ww, hh, threshold, gain, saturation, hueShift, darkDetail, Log);
    f = null;
    var win = new ImageWindow(ww, hh, 3, 32, true, true, "SHO_modified");
    win.mainView.beginProcess();
@@ -538,6 +546,7 @@ function main() {
    var lift = NumberRow(dlg, "Lift blacks %:", 0, 100, 0, "Lifts dark areas by this percent of the median brightness");
    var gas = NumberRow(dlg, "Gas balance %:", 0, 100, 0, "Percent of the filter scaling taken from the gas, not the stars");
    var hue = NumberRow(dlg, "Hue shift (degrees):", -90, 90, 0, "Turns all the colours: + gold to yellow and teal to blue, - gold to red and teal to green. Stars stay white");
+   var dark = NumberRow(dlg, "Dark detail:", 0, 7, 0, "Brings up the faint and dark parts, the bright half untouched: 0 off, 2 lifts 1% to 3% and 10% to 17%");
    var saturation = NumberRow(dlg, "Saturation %:", 0, 200, 100, "Percent of the normal colour");
    var threshold = NumberRow(dlg, "Colour threshold:", 0, 1000, 60, "Higher means less colour in faint, noisy areas");
    var brightness = NumberRow(dlg, "Brightness %:", 10, 1000, 100, "Percent of the automatic brightness");
@@ -559,7 +568,7 @@ function main() {
 
    if (dlg.execute()) {
       console.show();
-      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, gas.value, hue.value, saturation.value/100, threshold.value, brightness.value/100);
+      Run([ha.currentView, oiii.currentView, sii.currentView], balance.value, lift.value, gas.value, hue.value, dark.value, saturation.value/100, threshold.value, brightness.value/100);
    }
 }
 

@@ -53,6 +53,7 @@ You shouldn't need these to begin with.
 | `--lift` | 0 | Lifts dark areas by this percent of the median brightness, for example 15 |
 | `--gas-balance` | 0 | Percent of the filter scaling taken from the gas instead of the stars, 0 to 100 |
 | `--hue-shift` | 0 | Turns all the colours, in degrees: + gold to yellow and teal to blue, - gold to red and teal to green, for example 10 or -10. Stars stay white. Since November 2026 the default colours are turned by 10 degrees; `--hue-shift -10` gives the earlier look |
+| `--dark-detail` | 0 | Brings up the faint and dark parts and leaves the bright half alone: 2 lifts 1% to 3% and 10% to 17%, up to 7. Black stays black. Unlike `--lift` it doesn't grey the whole background, and unlike a stronger stretch it doesn't push bright cores towards white |
 | `--saturation` | 1 | Multiplies the colour, for example 0.9 |
 | `--threshold` | 60 | Higher means less colour in faint, noisy areas |
 | `--brightness` | 1 | Multiplies the automatic brightness, for example 1.5 or 0.7 |
@@ -105,7 +106,8 @@ separate, much as a TV signal keeps Y apart from U and V.
    `q` also pushes across the axis, towards red or blue.
 5. **Stars.** Anything standing well above its surroundings loses its colour.
 6. **Brightness** comes from the sum of the three filters, at full resolution. Colour comes from 7x7
-   means, as it needs less detail.
+   means, as it needs less detail. Dark detail, if set, then raises the display brightness by
+   `d + s·d·exp(-d/0.1)`: the faint parts several times, the bright half not at all.
 7. **Display.** The colour is built in OKLab. If a colour can't be shown, it loses just enough chroma
    to fit, so no channel clips and hues hold.
 
@@ -144,7 +146,8 @@ lot. It's there to show the starting point.
 
 `tools/hst2zwo.py` turns Hubble WFC3/UVIS or ACS/WFC exposures (`*_flc.fits` from
 [MAST](https://mast.stsci.edu)) into 16 bit FITS frames, in folders laid out as ZWO's ASICap names
-them. It repairs bad pixels, cosmic rays, specks and dark charge trap lines, one exposure at a time.
+them. It repairs bad pixels, cosmic rays, specks and dark charge trap lines, one exposure at a time,
+using all the processor's cores.
 With `mosaic` it also matches the exposures' levels, and on sets of up to 18 frames it compares the
 filters to catch cosmic rays where only one frame covers the sky.
 
@@ -156,8 +159,19 @@ python3 tools/hst2zwo.py <flc folder> <output folder> [mosaic]
 Add `mosaic` to place all exposures on one sky grid, which also corrects ACS's strong distortion
 from the headers, so use it for ACS. The frames still need stacking, and with `mosaic` they're
 already aligned, so the stacker shouldn't align them again. Narrowband filters go in the wheel
-slots Ha 3, OIII 4, SII 5 (F658N in 5, or as Ha on ACS); broadband red/I 1, green/V 2, blue/B 6.
-Its thresholds have been tuned on M16; ACS was tried on NGC 281 (proposal 10713).
+slots Ha 3, OIII 4, SII 5; [NII] (F658N, F660N) takes slot 5 when there is no SII and its own slot 7
+when there is; broadband red/I 1, green/V 2, blue/B 6.
+
+- **ACS ramp filters** (FR656N, FR505N ...) are filed by the wavelength Hubble tuned them to, read
+  from the header, not by their name: an FR656N exposure of the Cat's Eye (proposal 9026) was set
+  to 672 nm, the SII lines, and filed as Ha it spoiled the Ha stack.
+- **Bright targets** such as a planetary nebula's core are scaled down so their brightest extended
+  light stays under the 16 bit top; star cores may still clip. The log says when this happens.
+- **Short exposures** under a quarter of their filter's longest are left out: scaled up, they're
+  several times noisier.
+
+Its thresholds have been tuned on M16; ACS was tried on NGC 281 (proposal 10713) and the Cat's Eye
+(proposal 9026).
 
 ## Credits
 

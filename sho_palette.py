@@ -253,7 +253,11 @@ def Prepare(f, balance, lift=0, gas=0):
     return bad
 
 
-def Colour(f, bad, threshold, gain, gamma, saturation=1, hue_shift=0):
+DARK_SCALE = .1      # Dark Detail lifts display values well under this: d + s d exp(-d/DARK_SCALE)
+DARK_MAX = 7.0       # and is always rising up to this
+
+
+def Colour(f, bad, threshold, gain, gamma, saturation=1, hue_shift=0, dark_detail=0):
     """f prepared by Prepare(): returns display red, green, blue, 0 to 1, as float32."""
     hh, ww = f[0].shape
     nw, nh = (ww - 1)//NOISE_BLOCK, hh//NOISE_BLOCK
@@ -324,6 +328,9 @@ def Colour(f, bad, threshold, gain, gamma, saturation=1, hue_shift=0):
 
         # Brightness
         v = 1 - (1 - np.clip(gain*lum, 0, 1))**gamma
+        if dark_detail > 0:  # Faint and dark parts brought up on the display value, the bright half untouched
+            dv = v**(1/2.2)
+            v = np.minimum((dv + dark_detail*dv*np.exp(-dv/DARK_SCALE))**2.2, 1)
         L = v**(2.2/3)
 
         # Out of range: the chroma that just fits, so no channel clips and hues hold
@@ -403,6 +410,9 @@ def main():
     ap.add_argument('--hue-shift', type=float, default=0,
                     help='degrees all the colours turn: + gold to yellow and teal to blue, '
                          '- gold to red and teal to green (default 0)')
+    ap.add_argument('--dark-detail', type=float, default=0,
+                    help='brings up the faint and dark parts, the bright half untouched: 0 off, '
+                         '2 lifts 1%% to 3%% and 10%% to 17%%, up to 7 (default 0)')
     ap.add_argument('--saturation', type=float, default=1,
                     help='multiplies the colour, for example 0.9 (default 1)')
     ap.add_argument('--threshold', type=float, default=60,
@@ -422,6 +432,8 @@ def main():
         sys.exit('The output would overwrite an input: %s' % out)
     if args.brightness <= 0:
         sys.exit('--brightness must be above 0')
+    if not 0 <= args.dark_detail <= DARK_MAX:
+        sys.exit('--dark-detail goes from 0 to %g' % DARK_MAX)
 
     print('Reading the three images')
     f = [ReadMono(p) for p in paths]
@@ -441,7 +453,9 @@ def main():
     print('Making the colours')
     if args.hue_shift:
         print('Hue shift %+g degrees' % args.hue_shift)
-    rgb = Colour(f, bad, args.threshold, gain, GAMMA, args.saturation, args.hue_shift)
+    if args.dark_detail:
+        print('Dark detail %g' % args.dark_detail)
+    rgb = Colour(f, bad, args.threshold, gain, GAMMA, args.saturation, args.hue_shift, args.dark_detail)
     tifffile.imwrite(out, (rgb*65535 + .5).astype(np.uint16), photometric='rgb')
     print('Wrote %s' % out)
 
