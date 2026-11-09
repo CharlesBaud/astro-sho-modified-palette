@@ -12,7 +12,8 @@ noise survives, clipped to 0-65535, uint16 (BZERO 32768) like ASICap.
 
 One run directory per filter named from its first exposure, files
 YYYY-MM-DD-HHMM_S-<slot>-CapObj_NNNN.FIT, slots as the wheel: Ha 3, OIII 4, SII 5
-([NII] F658N takes slot 5 when there is no SII; on ACS it is the Ha filter), and broadband
+([NII] F658N or F660N takes slot 5 when there is no SII, slot 7 when there is; on ACS it is
+the Ha filter; ACS ramp filters by the wavelength they were tuned to, not their name), and broadband
 red/I 1, green/V 2, blue/B 6.
 
 Exposures come from MAST (mast.stsci.edu), e.g. NGC 6960 Veil (proposal 14056 visit 02)
@@ -28,8 +29,32 @@ import numpy as np
 import astroscrappy  # L.A.Cosmic, apt install python3-astroscrappy
 from scipy.ndimage import median_filter, maximum_filter, binary_dilation, binary_opening, label, find_objects, map_coordinates
 from numpy.lib.stride_tricks import sliding_window_view
+from concurrent.futures import ThreadPoolExecutor
 from astropy.io import fits
 from astropy.wcs import WCS
+
+NTHREADS = os.cpu_count() or 1
+
+
+def Median(v, size=None, footprint=None):
+    """median_filter in row strips on all the cores (scipy lets them run together), each strip
+    with the rows its window reaches beyond it, so the result is exactly the same."""
+    ry = (footprint.shape[0] if footprint is not None else (size if np.isscalar(size) else size[0])) // 2
+    hh = v.shape[0]
+    n = min(2*NTHREADS, max(1, hh // (8*ry + 64)))
+    if n < 2:
+        return median_filter(v, size=size, footprint=footprint)
+    out = np.empty_like(v)
+    cuts = np.linspace(0, hh, n + 1).astype(int)
+
+    def strip(i):
+        a, b = cuts[i], cuts[i + 1]
+        a0, b0 = max(a - ry, 0), min(b + ry, hh)
+        out[a:b] = median_filter(v[a0:b0], size=size, footprint=footprint)[a - a0:a - a0 + b - a]
+    with ThreadPoolExecutor(NTHREADS) as ex:
+        list(ex.map(strip, range(n)))
+    return out
+
 
 if len(sys.argv) < 3:
     sys.exit('usage: hst2zwo.py <flc dir> <out dir> [mosaic]')
@@ -37,8 +62,10 @@ SRC = sys.argv[1]
 OUT = sys.argv[2]
 MOSAIC = len(sys.argv) > 3 and sys.argv[3] == 'mosaic'
 GRID = 32       # Sky grid to chip positions computed every this many pixels, interpolated between
-SLOT = {'F656N': 3, 'F657N': 3, 'F502N': 4, 'F673N': 5, 'F658N': 5,
-        'F814W': 1, 'F775W': 1, 'F625W': 1, 'F555W': 2, 'F606W': 2, 'F550M': 2, 'F435W': 6, 'F475W': 6}
+SLOT = {'F656N': 3, 'F657N': 3, 'FR-HA': 3, 'F665N': 3, 'F502N': 4, 'FR-OIII': 4, 'F673N': 5, 'FR-SII': 5,
+        'F658N': 5, 'F660N': 5, 'FR-NII': 5,
+        'F814W': 1, 'F850LP': 1, 'F775W': 1, 'F625W': 1, 'F555W': 2, 'F606W': 2, 'F547M': 2, 'F550M': 2,
+        'F435W': 6, 'F438W': 6, 'F475W': 6, 'F390W': 6, 'F336W': 6}
 # Chip gap in rows, read noise in electrons, DQ bits repaired. ACS/WFC also has warm pixels (64,
 # 1.5% of a chip) and bad columns (128): with two frames a filter the stack cannot reject them
 CAMERA = {'WFC3/UVIS': (31, 3.1, 4 | 16 | 32 | 512 | 1024), 'ACS/WFC': (50, 4.0, 4 | 16 | 32 | 64 | 128 | 512)}
@@ -52,6 +79,10 @@ SHARP_R = 0.12  # Speck: its neighbours (median of the 8) rise less than this of
                 # star's rise about 0.3 of its peak
 OFFSET = 1000.0 # ADU for zero electrons
 NORM_S = 400.0  # Common exposure: the shortest, so nothing is scaled up into saturation
+BRIGHT_PCT = 99.9   # The brightest extended part of a target that must not clip
+SHORT_SHARE = 0.25  # Exposures under this share of their filter's longest are left out: scaled
+                    # up they are several times noisier, and the stack weighs frames alike
+FIT_TOP = 50000.0   # and its level, room left above for stars and the stack's own spread
 ADU_PER_E = 8.0  # Hubble narrowband skies hold a few electrons: scaled so the usual stretch
                  # gains (12-16) suit them, and the signal is not quantised
 DQMASK = 4 | 16 | 32 | 512 | 1024  # Bad, hot, warm, bad flat, charge trap: repaired
@@ -139,8 +170,8 @@ def StarCores(e, bad):
     stands above its surroundings, in a round filled shape (a thick cosmic ray track is
     long or uneven). Grown, as a core's edge has the same shape."""
     v = np.where(bad, np.median(e[~bad]), e)
-    around = median_filter(v, size=9)
-    lab, n = label(median_filter(v, size=3) - around > STAR_K*Sigma(around))
+    around = Median(v, size=9)
+    lab, n = label(Median(v, size=3) - around > STAR_K*Sigma(around))
     keep = np.zeros(n + 1, dtype=bool)
     for i, o in enumerate(find_objects(lab)):
         h, w = o[0].stop - o[0].start, o[1].stop - o[1].start
@@ -154,8 +185,8 @@ def Specks(e, bad):
     v = np.where(bad, np.median(e[~bad]), e)
     out = np.zeros(e.shape, dtype=bool)
     for _ in range(2):
-        around = median_filter(v, size=5)
-        near = median_filter(v, footprint=NEIGHBOURS)
+        around = Median(v, size=5)
+        near = Median(v, footprint=NEIGHBOURS)
         rise = v - around
         s = (rise > SHARP_K*Sigma(around)) & (near - around < SHARP_R*rise)
         out |= s
@@ -169,8 +200,8 @@ def DarkLines(e, bad):
     the low value. Found as a narrow dark line along a chip column: its median along the
     column stands below the columns beside it. Grown a column each way for its shoulders."""
     v = np.where(bad, np.median(e[~bad]), e)
-    along = median_filter(v, size=(DARK_RUN, 1))
-    around = median_filter(along, size=(1, DARK_AROUND))
+    along = Median(v, size=(DARK_RUN, 1))
+    around = Median(along, size=(1, DARK_AROUND))
     dark = along - around < -DARK_K*1.25*Sigma(around)/np.sqrt(DARK_RUN)
     low = dark & ~binary_opening(dark, structure=np.ones((1, DARK_WIDE + 1), dtype=bool))  # Not where dust is, wide
     lab, n = label(low)
@@ -330,19 +361,64 @@ def RepairOneFrameSpikes(paths):
                     fits.PrimaryHDU(fixed, header=h[0].header).writeto(p, overwrite=True)
 
 
-def FilterName(p):
-    """WFC3 has one filter keyword; ACS two wheels, one of them CLEAR."""
+# ACS ramp filters are tuned to a wavelength by the target's place on them, whatever their name
+# (an FR656N exposure of the Cat's Eye was set to 672.4 nm, the SII lines): filed by the
+# wavelength in the header, in Angstrom
+RAMP_LINES = (('FR-OIII', 4990, 5025), ('FR-HA', 6550, 6576), ('FR-NII', 6577, 6595), ('FR-SII', 6700, 6750))
+NII = ('F658N', 'F660N', 'FR-NII')  # [NII]: the third slot when there is no SII, else its own
+SII = ('F673N', 'FR-SII')
+NII_OWN_SLOT = 7
+
+
+def FilterName(h):
+    """WFC3 has one filter keyword; ACS two wheels, one of them CLEAR. A ramp filter by its
+    wavelength."""
+    p = h[0].header
     if p.get('FILTER'):
         return p['FILTER']
     for k in ('FILTER1', 'FILTER2'):
         f = str(p.get(k, '')).strip()
         if f and not f.startswith('CLEAR'):
+            if f.startswith('FR'):
+                lam = float(h[1].header.get('PHOTPLAM', p.get('PHOTPLAM', 0)) or 0)
+                for name, lo, hi in RAMP_LINES:
+                    if lo <= lam <= hi:
+                        return name
+                return '%s@%.0f' % (f, lam)  # Tuned to no line we use: left out
             return f
     return 'CLEAR'
 
 
+def Slot(filt, has_sii):
+    if has_sii and filt in NII:
+        return NII_OWN_SLOT
+    return SLOT.get(filt)
+
+
 def Camera(p):
     return '%s/%s' % (str(p.get('INSTRUME', '')).strip(), str(p.get('DETECTOR', '')).strip())
+
+
+def FitScale(frames):
+    """ADU_PER_E lowered for a bright target, so its brightest extended parts (all frames, every
+    filter, one scale for all so the filters keep their ratios) stay under the 16 bit top. Stars
+    are left out (a median over 5 x 5 of every fourth pixel): their cores may clip, a nebula's
+    or a cluster's glow may not."""
+    global ADU_PER_E
+    top = 0.0
+    for filt, _, f in frames:
+        if filt not in SLOT:
+            continue
+        h = fits.open(f, memmap=True)
+        k = NORM_S / float(h[0].header['EXPTIME'])
+        for ver in (1, 2):
+            d = median_filter(np.nan_to_num(h['SCI', ver].data[::4, ::4]), size=5)
+            top = max(top, float(np.nanpercentile(d, BRIGHT_PCT)) * k)
+    room = (FIT_TOP - OFFSET) / ADU_PER_E
+    if top > room:
+        ADU_PER_E *= room / top
+        print('Bright target: %.3f ADU per electron (%.0f%% of the usual) so it fits under %d' %
+              (ADU_PER_E, 100 * room / top, FIT_TOP))
 
 
 def main():
@@ -358,9 +434,22 @@ def main():
         if Camera(p) not in CAMERA:
             print('Skipped %s: camera %s not known' % (os.path.basename(f), Camera(p)))
             continue
-        frames.append((FilterName(p), when, f))
-    frames.sort(key=lambda x: (SLOT.get(x[0], 9), x[1]))
+        frames.append((FilterName(h), when, f))
+    has_sii = any(filt in SII for filt, _, _ in frames)
+    frames.sort(key=lambda x: (Slot(x[0], has_sii) or 9, x[1]))
+    longest = {}
+    for filt, _, f in frames:
+        longest[filt] = max(longest.get(filt, 0), float(fits.getheader(f)['EXPTIME']))
+    keep = []
+    for filt, when, f in frames:
+        t = float(fits.getheader(f)['EXPTIME'])
+        if t < SHORT_SHARE * longest[filt]:
+            print('Skipped %s: %.0f s, the %s exposures go to %.0f s' % (os.path.basename(f), t, filt, longest[filt]))
+        else:
+            keep.append((filt, when, f))
+    frames = keep
 
+    FitScale(frames)
     os.makedirs(OUT, exist_ok=True)
     if MOSAIC:
         grid, gw, gh = SkyGrid([f for _, _, f in frames])
@@ -369,8 +458,9 @@ def main():
     written = {}
     for filt, when, f in frames:
         if filt not in SLOT:
+            print('Skipped %s: filter %s has no slot' % (os.path.basename(f), filt))
             continue
-        slot = SLOT[filt]
+        slot = Slot(filt, has_sii)
         if filt not in runs:  # Run directory from the first exposure of the filter
             runs[filt] = (when, os.path.join(OUT, when.strftime('%Y-%m-%d_%H_%M_%SZ')), 0)
             os.makedirs(runs[filt][1], exist_ok=True)
@@ -382,8 +472,8 @@ def main():
         GAP, READNOISE, DQMASK = CAMERA[Camera(p)]
         # Hot pixels are fixed on the chip, the star matcher would align frames on them;
         # cosmic rays cannot be rejected by the stack with only 2-4 exposures a filter
-        uvis2, cr2 = CleanChip(*LoadChip(h, 1))
-        uvis1, cr1 = CleanChip(*LoadChip(h, 2))
+        with ThreadPoolExecutor(2) as ex:  # The chips at once: astroscrappy partly runs alongside
+            (uvis2, cr2), (uvis1, cr1) = ex.map(lambda ver: CleanChip(*LoadChip(h, ver)), (1, 2))
         # UVIS2's top rows and UVIS1's bottom rows face the gap
         ne = EDGE_DEAD + EDGE_MEDIAN  # Not n, that numbers the frames
         uvis2[-ne:-EDGE_DEAD] = median_filter(uvis2[-ne-1:], size=3)[1:-EDGE_DEAD]
