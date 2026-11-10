@@ -22,12 +22,16 @@ or NGC 6888 (proposal 17882): the *_flc.fits files of each filter's association.
 Add 'mosaic' to put all exposures on one sky grid from their headers (0 where a frame has
 no data), for stacking several pointings with "preAligned": true.
 
-usage: hst2zwo.py <flc dir> <out dir> [mosaic]
+Add 'bleed' to repair the bleed trails of saturated stars (hstbleed.py): each keeps its round
+core, the trail is redrawn as the star's halo, the sky and its vertical diffraction spike.
+
+usage: hst2zwo.py <flc dir> <out dir> [mosaic] [bleed]
 """
 import os, sys, glob, datetime
 import numpy as np
 import astroscrappy  # L.A.Cosmic, apt install python3-astroscrappy
 from scipy.ndimage import median_filter, maximum_filter, binary_dilation, binary_opening, label, find_objects, map_coordinates
+from scipy.ndimage import shift as ndshift
 from numpy.lib.stride_tricks import sliding_window_view
 from concurrent.futures import ThreadPoolExecutor
 from astropy.io import fits
@@ -60,7 +64,12 @@ if len(sys.argv) < 3:
     sys.exit('usage: hst2zwo.py <flc dir> <out dir> [mosaic]')
 SRC = sys.argv[1]
 OUT = sys.argv[2]
-MOSAIC = len(sys.argv) > 3 and sys.argv[3] == 'mosaic'
+MOSAIC = 'mosaic' in sys.argv[3:]
+BLEED = 'bleed' in sys.argv[3:]
+if BLEED:
+    import hstbleed  # Beside this script
+BLED = {}       # Bled stars repaired on each chip of the frame being converted
+REDRAWN = {}    # and the pixels redrawn, which the other filters fill in (CrossFill)
 GRID = 32       # Sky grid to chip positions computed every this many pixels, interpolated between
 SLOT = {'F656N': 3, 'F657N': 3, 'FR-HA': 3, 'F665N': 3, 'F502N': 4, 'FR-OIII': 4, 'F673N': 5, 'FR-SII': 5,
         'F658N': 5, 'F660N': 5, 'FR-NII': 5,
@@ -97,6 +106,9 @@ DARK_LEN = 60   # Shortest line, rows, and at most this wide: DARK_WIDE columns 
 DARK_WIDE = 6
 LEVEL_STEP = 4     # Frame levels (MatchLevels): measured on every this many pixels
 LEVEL_MIN_OVERLAP = 20000  # Fewest of those shared for a pair of frames to count
+ALIGN_BOX = 2048  # Frame offsets (AlignFrames): measured on this square, where the reference has most data
+ALIGN_MIN = 0.1   # Smaller offsets, pixels, left alone: not worth another interpolation
+ALIGN_MAX = 40.0  # Larger offsets are a failed measurement, frame left where Hubble's pointing put it
 SPIKE_MAX_FRAMES = 18  # One frame spikes (OneFrameSpikes): holds all frames in memory, so only small sets
 SPIKE_TILE = 512   # Tile size
 SPIKE_AROUND = 11  # Surroundings, the median of this square
@@ -218,10 +230,17 @@ def DarkLines(e, bad):
 
 
 def LoadChip(h, ver):
-    """A chip's electrons, its pixels to repair (flagged, or impossible values), and those
-    Hubble flags as cosmic rays."""
+    """A chip's electrons (bleed trails repaired with 'bleed'), its pixels to repair (flagged,
+    or impossible values), and those Hubble flags as cosmic rays."""
     e = h['SCI', ver].data.astype(np.float64)
     dq = h['DQ', ver].data
+    if BLEED:  # Before the cosmic ray search, on the chip as read out: the trails are columns
+        sat = (dq & hstbleed.DQ_SAT) != 0
+        found = hstbleed.Stars(sat, e)
+        e, redrawn = hstbleed.Fill(e.astype(np.float32), sat, found)
+        e = e.astype(np.float64)
+        BLED[ver] = len(found)
+        REDRAWN[ver] = redrawn
     return e, ((dq & DQMASK) != 0) | (e < E_MIN) | (e > E_MAX), (dq & DQ_CR) != 0
 
 
@@ -270,6 +289,75 @@ def PlaceChip(out, e, w, g):
     v[map_coordinates(ok.astype(np.float32), at, order=1) < 0.999] = np.nan
     r = out[y0:y1, x0:x1]
     r[inside] = v
+
+
+def Detail(img, y0, x0):
+    """The stars of a frame's box, for lining up frames of any filter: sky removed, the
+    brightness compressed so the many faint stars count with the few bright ones."""
+    b = img[y0:y0 + ALIGN_BOX, x0:x0 + ALIGN_BOX].astype(np.float32)
+    ok = b > 0
+    sky = np.median(b[ok]) if ok.any() else 0
+    d = np.log1p(np.clip(b - sky, 0, None))
+    d[~ok] = 0
+    d -= median_filter(d, size=9)
+    d[~ok] = 0
+    win = np.hanning(ALIGN_BOX).astype(np.float32)
+    return d * win[:, None] * win[None, :]
+
+
+def Offset(a, b):
+    """Shift (dy, dx) that puts b onto a, from the phase correlation peak, to a tenth of a pixel."""
+    fa, fb = np.fft.rfft2(a), np.fft.rfft2(b)
+    c = fa * np.conj(fb)
+    r = np.fft.irfft2(c / (np.abs(c) + 1e-12), s=a.shape)
+    i = np.unravel_index(np.argmax(r), r.shape)
+    out = []
+    for d, v in enumerate(i):
+        lo, hi = list(i), list(i)
+        lo[d], hi[d] = (v - 1) % a.shape[d], (v + 1) % a.shape[d]
+        m, z, p = r[tuple(lo)], r[i], r[tuple(hi)]
+        den = m - 2 * z + p
+        out.append((v if v <= a.shape[d] // 2 else v - a.shape[d]) + (0.5 * (m - p) / den if den else 0))
+    return out, r[i] / r.std()
+
+
+def AlignFrames(paths, masks=None, shape=None):
+    """Hubble's pointing is good to about 0.1 arcsec between orbits, 2 ACS pixels: stars of
+    different visits land beside each other. The stacker cannot fix it in a crowded field
+    (too many look-alike star triangles), so every frame is moved onto one reference here."""
+    allp = [q for v in paths.values() for q in v]
+    ref = fits.getdata(max(paths.values(), key=len)[0])
+    h, w = ref.shape
+    # The box: the most data of the reference, on a coarse search
+    cov = (ref[::64, ::64] > 0).astype(np.float32)
+    n = ALIGN_BOX // 64
+    best, y0, x0 = -1, 0, 0
+    for by in range(0, max(cov.shape[0] - n, 0) + 1):
+        for bx in range(0, max(cov.shape[1] - n, 0) + 1):
+            s = cov[by:by + n, bx:bx + n].sum()
+            if s > best:
+                best, y0, x0 = s, by * 64, bx * 64
+    rd = Detail(ref, y0, x0)
+    for q in allp:
+        with fits.open(q) as f:
+            data, hd = f[0].data, f[0].header.copy()
+        (dy, dx), peak = Offset(rd, Detail(data, y0, x0))
+        name = os.path.basename(q)
+        if np.hypot(dy, dx) > ALIGN_MAX or peak < 8:
+            print('%s: offset (%.1f, %.1f) peak %.0f not trusted, left as it is' % (name, dx, dy, peak))
+            continue
+        if np.hypot(dy, dx) < ALIGN_MIN:
+            continue
+        valid = data > 0
+        # Bilinear, as the chips are placed: a cubic spline undershoots to black beside saturated stars
+        moved = ndshift(data.astype(np.float32), (dy, dx), order=1, mode='constant', cval=0)
+        keep = ndshift(valid.astype(np.float32), (dy, dx), order=1, mode='constant', cval=0) > 0.999
+        out = np.where(keep, np.clip(np.round(moved), 1, 65535), 0).astype(np.uint16)
+        fits.PrimaryHDU(out, header=hd).writeto(q, overwrite=True)
+        if masks and q in masks:  # The redrawn pixels move with their frame
+            m = np.unpackbits(masks[q], count=shape[0] * shape[1]).reshape(shape).astype(np.float32)
+            masks[q] = np.packbits(ndshift(m, (dy, dx), order=1, mode='constant', cval=0) > 0.01)
+        print('%s: moved (%.2f, %.2f) px onto the reference' % (name, dx, dy))
 
 
 def MatchLevels(paths):
@@ -456,6 +544,7 @@ def main():
         print('Sky grid %d x %d' % (gw, gh))
     runs = {}
     written = {}
+    masks = {}  # Frame path: its redrawn bleed pixels on the grid, packed
     for filt, when, f in frames:
         if filt not in SLOT:
             print('Skipped %s: filter %s has no slot' % (os.path.basename(f), filt))
@@ -487,6 +576,11 @@ def main():
             e = np.full((gh, gw), np.nan, dtype=np.float32)
             PlaceChip(e, uvis2 * k, ChipWcs(h, 1), grid)
             PlaceChip(e, uvis1 * k, ChipWcs(h, 2), grid)
+            if BLEED:  # The redrawn pixels on the grid too, a pixel touched by any of them
+                m = np.zeros((gh, gw), dtype=np.float32)
+                PlaceChip(m, REDRAWN[1].astype(np.float32), ChipWcs(h, 1), grid)
+                PlaceChip(m, REDRAWN[2].astype(np.float32), ChipWcs(h, 2), grid)
+                redrawn_grid = np.nan_to_num(m) > 0.01
         else:
             e = np.vstack([uvis2 * k, gap, uvis1 * k])  # Row 0 is the bottom in FITS
         raw = np.nan_to_num(np.clip(np.round(e + OFFSET), 1, 65535), nan=0.0).astype(np.uint16)  # 0 only for no data
@@ -507,11 +601,22 @@ def main():
             hd[key] = (val, com)
         fits.PrimaryHDU(raw, header=hd).writeto(os.path.join(rdir, name), overwrite=True)
         sat = (raw >= 65535).mean() * 100
-        print('%-6s %s %5.0fs  sky %.0f ADU  saturated %.3f%%  cosmic rays %.2f%%  -> %s' % (filt, when.strftime('%H:%M:%S'),
-              p['EXPTIME'], np.median(raw[raw > 0]), sat, 50 * (cr1 + cr2), os.path.join(os.path.basename(rdir), name)))
+        print('%-6s %s %5.0fs  sky %.0f ADU  saturated %.3f%%  cosmic rays %.2f%%%s  -> %s' % (filt, when.strftime('%H:%M:%S'),
+              p['EXPTIME'], np.median(raw[raw > 0]), sat, 50 * (cr1 + cr2),
+              '  bleeds %d' % sum(BLED.values()) if BLEED else '', os.path.join(os.path.basename(rdir), name)))
         written.setdefault(slot, []).append(os.path.join(rdir, name))
+        if MOSAIC and BLEED:
+            masks[os.path.join(rdir, name)] = np.packbits(redrawn_grid)
+    if MOSAIC and sum(len(v) for v in written.values()) > 1:
+        AlignFrames(written, masks, (gh, gw))
     if MOSAIC:
         MatchLevels(written)
+    if MOSAIC and BLEED:
+        dump = os.environ.get('HST2ZWO_MASKS')  # Trials: keep the masks, the cross filter fill left out
+        if dump:
+            np.savez(dump, shape=(gh, gw), **{p: m for p, m in masks.items()})
+        else:
+            hstbleed.CrossFill(written, {p: np.unpackbits(m, count=gh * gw).reshape(gh, gw).astype(bool) for p, m in masks.items()})
     if MOSAIC and len(written) > 1:
         if sum(len(v) for v in written.values()) <= SPIKE_MAX_FRAMES:
             RepairOneFrameSpikes(written)

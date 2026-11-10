@@ -148,12 +148,14 @@ lot. It's there to show the starting point.
 [MAST](https://mast.stsci.edu)) into 16 bit FITS frames, in folders laid out as ZWO's ASICap names
 them. It repairs bad pixels, cosmic rays, specks and dark charge trap lines, one exposure at a time,
 using all the processor's cores.
-With `mosaic` it also matches the exposures' levels, and on sets of up to 18 frames it compares the
-filters to catch cosmic rays where only one frame covers the sky.
+With `mosaic` it also matches the exposures' levels, lines every exposure up on one reference to a
+tenth of a pixel (Hubble's pointing differs by about 0.1 arcsec between orbits, 2 ACS pixels, which
+gives coloured edges on stars), and on sets of up to 18 frames it compares the filters to catch
+cosmic rays where only one frame covers the sky.
 
 ```
 pip install numpy scipy astropy astroscrappy
-python3 tools/hst2zwo.py <flc folder> <output folder> [mosaic]
+python3 tools/hst2zwo.py <flc folder> <output folder> [mosaic] [bleed]
 ```
 
 Add `mosaic` to place all exposures on one sky grid, which also corrects ACS's strong distortion
@@ -169,6 +171,13 @@ when there is; broadband red/I 1, green/V 2, blue/B 6.
   light stays under the 16 bit top; star cores may still clip. The log says when this happens.
 - **Short exposures** under a quarter of their filter's longest are left out: scaled up, they're
   several times noisier.
+- **Bleed trails** (`bleed`, `tools/hstbleed.py`): a saturated star's extra charge runs up and down
+  its CCD column. Each bled star keeps its round saturated core; the trail is redrawn from the
+  star's own radial profile, the sky between the neighbouring stars and matching photon noise, and
+  the vertical diffraction spike is drawn back from the horizontal one. With `mosaic`, stars hidden
+  under a trail in one filter are then put back from the filters that did not bleed there (or from
+  another exposure of the same filter), so they don't show in one colour alone. Stars under a
+  trail in every filter are lost.
 
 Its thresholds have been tuned on M16; ACS was tried on NGC 281 (proposal 10713) and the Cat's Eye
 (proposal 9026).
