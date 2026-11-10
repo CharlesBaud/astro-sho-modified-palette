@@ -468,6 +468,7 @@ def main():
         runs[filt] = (start, rdir, n + 1)
 
         h = fits.open(f, memmap=True)
+        h.readall()  # Every extension found now: astropy's lazy lookup is not safe across the chip threads
         p = h[0].header
         GAP, READNOISE, DQMASK = CAMERA[Camera(p)]
         # Hot pixels are fixed on the chip, the star matcher would align frames on them;
